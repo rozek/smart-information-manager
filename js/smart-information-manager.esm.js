@@ -255,7 +255,8 @@ function ValueIsCompound(Value) {
     return ValueIsPlainObject(Value) && ((Value.Variant === 'sim/special/compound') ||
         (Value.Variant === 'sim/special/content') || (Value.Variant === 'sim/special/template') ||
         (Value.Variant === 'sim/special/overlay') || (Value.Variant === 'sim/special/dialog') ||
-        (Value.Variant === 'sim/special/applet') || (Value.Variant === 'sim/special/page'));
+        (Value.Variant === 'sim/special/applet') || (Value.Variant === 'sim/special/page') ||
+        (Value.Variant === 'sim/special/single-page-applet'));
 }
 /**** ValueIsSerializableValue ****/
 export function ValueIsSerializableValue(Value) {
@@ -2054,6 +2055,8 @@ function validateCustomPropertiesInSticker(Value) {
 /**** TypeOfVisual ****/
 export const SIM_VisualTypes = ['project', 'board', 'sticker'];
 function TypeOfVisual(Visual) {
+    if (Visual.internalId == null)
+        debugger;
     switch (true) {
         case Visual.internalId.startsWith('sim-project-'): return 'project';
         case Visual.internalId.startsWith('sim-board-'): return 'board';
@@ -5575,6 +5578,14 @@ _registerVariant('SIM/special/Template', function Template(PropSet) {
     let [Classes] = parsedPropSet(PropSet, optionalTextline('class'));
     return html `<div class="sim-component template ${Classes !== null && Classes !== void 0 ? Classes : ''}"/>`;
 }, undefined, [], { Offsets: [10, 100, 10, 100] });
+/**** SPASticker ****/
+_registerVariant('SIM/special/single-page-applet', function SPASticker(PropSet) {
+    let [Classes, RestProps] = parsedPropSet(PropSet, optionalTextline('class'));
+    return html `<div class="sim-component single-page-applet ${Classes !== null && Classes !== void 0 ? Classes : ''}" ...${RestProps}/>`;
+}, undefined, [
+    { Name: 'HeadExtensions', Label: '<head> extensions', EditorType: 'text-input',
+        Placeholder: '(optional <head> extensions)' },
+], { Offsets: [10, 240, 10, 160] });
 /**** AppletSticker ****/
 _registerVariant('SIM/special/Applet', function AppletSticker(PropSet) {
     let [Classes, RestProps] = parsedPropSet(PropSet, optionalTextline('class'));
@@ -9060,22 +9071,37 @@ function DesignerAPI() {
         });
     }
     /**** doGenerateWebApp ****/
-    function doGenerateWebApp(Kind) {
-        const selectedStickers = sortedStickerSelection();
-        if (selectedStickers.length === 0) {
-            return;
+    function doGenerateWebApp(Mode) {
+        const [Source, Extent, Modifiability] = Mode.split('|');
+        const Serialization = WebAppSerializationFrom(Source);
+        const withDesigner = (Modifiability === 'designable');
+        generateWebAppFrom(Serialization, Extent, withDesigner);
+    }
+    /**** WebAppSerializationFrom ****/
+    function WebAppSerializationFrom(Source) {
+        if (Source === 'project') {
+            return externalizedProject(curProject);
         }
-        switch (Kind) {
-            case 'without Designer':
-                generateStandaloneWebApp(false);
-                break;
-            case 'with Designer':
-                generateStandaloneWebApp(true);
-                break;
-            case 'from selected Applet Sticker':
-                generateWebAppFromSticker(selectedStickers[0]);
-                break;
-            default: console.error('InvalidArgument: invalid generation kind ' + quoted(Kind));
+        else {
+            const selectedStickers = sortedStickerSelection();
+            if (selectedStickers.length !== 1)
+                throwError('InvalidSelection:exactly one sticker must be selected for Web App generation');
+            const selectedSticker = selectedStickers[0];
+            switch (selectedSticker.Variant) {
+                case 'sim/special/applet':
+                    throwError('NotYetImplemented:this feature has not yet been implemented');
+                    break;
+                case 'sim/special/single-page-applet':
+                    const fullConfiguration = externalizedSticker(selectedSticker);
+                    delete fullConfiguration.Variant;
+                    delete fullConfiguration.Anchors;
+                    delete fullConfiguration.Offsets;
+                    const { Width, Height } = GeometryOfSticker(selectedSticker);
+                    const { Name, StickerList } = fullConfiguration, AppletConfiguration = __rest(fullConfiguration, ["Name", "StickerList"]);
+                    const Serialization = Object.assign(Object.assign({ Name: Name !== null && Name !== void 0 ? Name : 'SIM-Applet', Width, Height }, AppletConfiguration), { Boardlist: [{ StickerList }] });
+                    return Serialization;
+                default: throwError('InvalidStickerVariant:selected sticker is not suitable for Web App generation');
+            }
         }
     }
     /**** doPrintProject ****/
@@ -9124,14 +9150,22 @@ function DesignerAPI() {
     //------------------------------------------------------------------------------
     //--                                Generators                                --
     //------------------------------------------------------------------------------
-    /**** generateEmbeddableWebApp - with integrated script ****/
-    function generateEmbeddableWebApp() {
-        const ProjectName = curProject.Name;
-        const Serialization = JSON.stringify(externalizedProject(curProject));
+    /**** generateWebAppFrom ****/
+    function generateWebAppFrom(Serialization, Extent, withDesigner) {
+        if (Extent === 'standalone') {
+            generateStandaloneWebAppFrom(Serialization, withDesigner);
+        }
+        else {
+            generateEmbeddableWebAppFrom(Serialization, withDesigner);
+        }
+    }
+    /**** generateEmbeddableWebAppFrom ****/
+    function generateEmbeddableWebAppFrom(Serialization, withDesigner) {
+        const ProjectName = Serialization.Name;
         const ProjectSource = `
 ${'<'}script type="module">
   import { registerProject, html } from 'active-information-manager'
-  registerProject(${Serialization})
+  registerProject(${JSON.stringify(Serialization)})
 ${'<'}/script>
     `;
         const encodedSource = (new TextEncoder()).encode(ProjectSource);
@@ -9143,11 +9177,10 @@ ${'<'}/script>
             window.alert('this WebApp generation is not stable');
         }
     }
-    /**** generateStandaloneWebApp - with separate script and without designer ****/
-    function generateStandaloneWebApp(withDesigner = false) {
-        const ProjectName = curProject.Name;
-        const Serialization = JSON.stringify(externalizedProject(curProject));
-        const { HeadExtensions, minWidth, maxWidth, minHeight, maxHeight, toBeCentered, withMobileFrame, expectedOrientation } = curProject;
+    /**** generateStandaloneWebAppFrom ****/
+    function generateStandaloneWebAppFrom(Serialization, withDesigner) {
+        const ProjectName = Serialization.Name;
+        const { HeadExtensions, minWidth, maxWidth, minHeight, maxHeight, toBeCentered, withMobileFrame, expectedOrientation } = Serialization;
         const ProjectSource = `
   <!DOCTYPE html>
   <html lang="en" charset="utf-8" style="width:100%">
@@ -9162,7 +9195,19 @@ ${'<'}/script>
 
       html, body { width:100%; height:100%; width:100vw; height:100vh; margin:0px; padding:0px }
       html       { overflow:hidden scroll }
+
+      html, body {
+        background-color: white;
+        background-image: url(/common/BinaryTexture_white.jpg);
+        background-repeat:repeat;
+
+        font-family:'Source Sans Pro','Helvetica Neue',Helvetica,Arial,sans-serif;
+        font-size:14px; font-weight:400; color:black;
+        line-height:150%;
+      }
+
     </style>
+    <link rel="stylesheet" name="fontawesome" href="/css/font-awesome.min.css">
     <link rel="stylesheet" href="https://rozek.github.io/marked-katex-extension/dist/katex.min.css">
 
     ${'<'}script type="importmap">
@@ -9170,6 +9215,10 @@ ${'<'}/script>
       "imports": {
         "javascript-interface-library":"https://rozek.github.io/javascript-interface-library/dist/javascript-interface-library.esm.js",
         "htm/preact":                  "https://rozek.github.io/htm/preact/standalone.module.js",
+        "preact":                      "https://rozek.github.io/htm/preact/standalone.module.js",
+        "preact/compat":               "https://rozek.github.io/htm/preact/standalone.module.js",
+        "preact/hooks":                "https://rozek.github.io/htm/preact/standalone.module.js",
+        "auto-animate":                "https://rozek.github.io/smart-information-manager/js/auto-animate.esm.js",
         "nanoid":                      "https://rozek.github.io/nanoid/dist/nanoid.esm.js",
         "nanoid-dictionary":           "https://rozek.github.io/nanoid-dictionary/dist/nanoid-dictionary.esm.js",
         "svelte-coordinate-conversion":"https://rozek.github.io/svelte-coordinate-conversion/dist/svelte-coordinate-conversion.esm.js",
@@ -9177,6 +9226,8 @@ ${'<'}/script>
 
         "sim-components":           "https://rozek.github.io/sim-components/js/sim-components.esm.js",
         "smart-information-manager":"https://rozek.github.io/smart-information-manager/js/smart-information-manager.esm.js",
+
+        "localforage":"https://rozek.github.io/smart-information-manager/js/localforage.esm.js",
 
         "marked":                "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js",
         "marked-katex-extension":"https://rozek.github.io/marked-katex-extension/dist/marked-katex-extension.esm.js",
@@ -9195,11 +9246,11 @@ ${'<'}/script>
     ${'<'}script src="https://rozek.github.io/smart-information-manager/js/smart-information-manager.esm.js"  type="module">${'<'}/script>
     ${'<'}script src="https://rozek.github.io/download/download.min.js">${'<'}/script>
 
-    ${HeadExtensions}
+    ${HeadExtensions !== null && HeadExtensions !== void 0 ? HeadExtensions : ''}
 
     ${'<'}script type="module">
   import { registerProject, html } from 'smart-information-manager'
-  registerProject(${Serialization})
+  registerProject(${JSON.stringify(Serialization)})
     ${'<'}/script>
 
     ${'<'}script>
@@ -9214,8 +9265,8 @@ ${'<'}/script>
     const ViewportWidth  = window.innerWidth
     const ViewportHeight = window.innerHeight
 
-    let Width  = Math.max(minWidth,  Math.min(ViewportWidth,  maxWidth  == null ? Infinity : maxWidth))
-    let Height = Math.max(minHeight, Math.min(ViewportHeight, maxHeight == null ? Infinity : maxHeight))
+    let Width  = Math.max(minWidth  ?? 0, Math.min(ViewportWidth,  maxWidth  == null ? Infinity : maxWidth))
+    let Height = Math.max(minHeight ?? 0, Math.min(ViewportHeight, maxHeight == null ? Infinity : maxHeight))
                           // uses any available space - does not use designer size
 
     if ((Width >= ViewportWidth) && (Height >= ViewportHeight)) {
@@ -9268,9 +9319,6 @@ ${'<'}/script>
         else {
             window.alert('this WebApp generation is not stable');
         }
-    }
-    /**** generatedWebAppFromSticker (from an AppletSticker & its PageStickers) ****/
-    function generateWebAppFromSticker(BaseSticker) {
     }
     /**** return actual Designer API ****/
     return {
@@ -9326,8 +9374,6 @@ ${'<'}/script>
         doVisitPrevBoard, doVisitNextBoard, doVisitBoard, doVisitHomeBoard,
         doCreateScreenshot, doGenerateWebApp, doPrintProject,
         doRemoveLocalBackup,
-        generateEmbeddableWebApp, generateStandaloneWebApp,
-        generateWebAppFromSticker,
     };
 }
 //------------------------------------------------------------------------------
@@ -9429,7 +9475,7 @@ const ToolboxRenderer = (PropSet) => {
     const selectedBoards = DesignerState.selectedBoards;
     const selectedStickers = sortedStickerSelection();
     const selectedStickerIsApplet = ((selectedStickers.length === 1) &&
-        (selectedStickers.values().next().value.Variant === 'sim/special/applet'));
+        (selectedStickers.values().next().value.Variant === 'sim/special/single-page-applet'));
     const toggleLayouting = () => {
         DesignerState.isLayouting = !DesignerState.isLayouting;
         rerender();
@@ -9466,7 +9512,7 @@ const ToolboxRenderer = (PropSet) => {
         SettingsButton: { Value: `${IconFolder}/gear.png` },
         ConsoleButton: { Value: `${IconFolder}/terminal.png` },
         ScreenshotButton: { Value: `${IconFolder}/clapperboard.png` },
-        GeneratorButton: { Icon: `${IconFolder}/clapperboard-play.png`, Options: [], Value: '' },
+        //    GeneratorButton:  { Icon: `${IconFolder}/clapperboard-play.png`, Options:[], Value:'' },
         PrintButton: { Value: `${IconFolder}/printer.png` },
     });
     configure({
@@ -9567,15 +9613,7 @@ const ToolboxRenderer = (PropSet) => {
             onClick: doCreateScreenshot,
         },
         GeneratorButton: {
-            Options: [
-                ':-please select',
-                '----',
-                'without Designer',
-                'with Designer',
-                '----',
-                (!selectedStickerIsApplet ? '-' : '') + 'from selected Applet Sticker'
-            ],
-            onValueInput: (Value, Event) => {
+            onInput: (Event) => {
                 doGenerateWebApp(Event.target.value);
                 Event.target.value = '';
             },
@@ -9626,7 +9664,28 @@ const ToolboxRenderer = (PropSet) => {
 
         <${sim.Icon} ...${Configuration.ConsoleButton}/>
         <${sim.Icon} ...${Configuration.ScreenshotButton}/>
-        <${sim.PseudoDropDown} ...${Configuration.GeneratorButton}/>
+        <label class="sim-component pseudo-dropdown">
+          <div style="
+            -webkit-mask-image:url(${IconFolder}/clapperboard-play.png); mask-image:url(${IconFolder}/clapperboard-play.png);
+            background-color:black;
+          "/>
+          <select ...${Configuration.GeneratorButton}>
+            <option disabled selected value="">please select</>
+            <option disabled                  >----</>
+            <optgroup label="from whole Project">
+              <option value="project|standalone|designable">standalone, with Designer</>
+              <option value="project|standalone|fixed">standalone, without Designer</>
+              <option value="project|embeddable|designable">embeddable, with Designer</>
+              <option value="project|embeddable|fixed">embeddable, without Designer</>
+            </>
+            <optgroup label="from selected Applet Sticker" disabled=${!selectedStickerIsApplet}>
+              <option value="sticker|standalone|designable">standalone, with Designer</>
+              <option value="sticker|standalone|fixed">standalone, without Designer</>
+              <option value="sticker|embeddable|designable">embeddable, with Designer</>
+              <option value="sticker|embeddable|fixed">embeddable, without Designer</>
+            </>
+          </select>
+        </label>
         <${sim.Icon} ...${Configuration.PrintButton}/>
       </>
     `;
@@ -13084,6 +13143,7 @@ function nestedOptionListForVariants() {
         <option value="" disabled>----</>
         <option value="sim/special/template">Template</>
         <option value="" disabled>----</>
+        <option value="sim/special/single-page-applet">Single-Page Applet (for WebApp export)</>
         <option value="sim/special/applet">Applet (for WebApp export)</>
         <option value="sim/special/page"  >Page (dto.)</>
       </>
