@@ -1,2 +1,7 @@
-# smart-information-manager
-(wip, do not use yet)
+# smart-information-manager #
+
+(WIP, please ignore for the moment)
+
+## License ##
+
+[MIT License](LICENSE.md)
